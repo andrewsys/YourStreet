@@ -27,10 +27,14 @@ export interface OccurrenceSummary {
   description: string | null;
   address: string | null;
   createdAt: string;
+  archivedAt: string | null;
   imageBase64: string | null;
   likesCount: number;
   favoritesCount: number;
   commentsCount: number;
+  solvedVotesCount: number;
+  unsolvedVotesCount: number;
+  currentUserVote: boolean | null;
   likedByCurrentUser: boolean;
   favoritedByCurrentUser: boolean;
 }
@@ -59,14 +63,18 @@ export interface CreateOccurrencePayload {
 }
 
 class OccurrenceService {
-  async list(): Promise<Array<OccurrenceSummary>> {
-    const response = await apiFetch("/occurrences");
+  async list(options?: { includeArchived?: boolean }): Promise<Array<OccurrenceSummary>> {
+    const includeArchived = options?.includeArchived ?? false;
+    const query = includeArchived ? "?includeArchived=true" : "";
+    const response = await apiFetch(`/occurrences${query}`);
     if (!response.ok) throw await readErrorMessage(response, "Falha ao carregar ocorrencias");
     return response.json();
   }
 
-  async getById(id: number): Promise<OccurrenceDetails> {
-    const response = await apiFetch(`/occurrences/${id}`);
+  async getById(id: number, options?: { includeArchived?: boolean }): Promise<OccurrenceDetails> {
+    const includeArchived = options?.includeArchived ?? false;
+    const query = includeArchived ? "?includeArchived=true" : "";
+    const response = await apiFetch(`/occurrences/${id}${query}`);
     if (!response.ok) throw await readErrorMessage(response, "Falha ao carregar ocorrencia");
     return response.json();
   }
@@ -98,8 +106,10 @@ class OccurrenceService {
     if (!response.ok) throw await readErrorMessage(response, "Falha ao favoritar ocorrencia");
   }
 
-  async getComments(id: number): Promise<Array<OccurrenceComment>> {
-    const response = await apiFetch(`/occurrences/${id}/comments`);
+  async getComments(id: number, options?: { includeArchived?: boolean }): Promise<Array<OccurrenceComment>> {
+    const includeArchived = options?.includeArchived ?? false;
+    const query = includeArchived ? "?includeArchived=true" : "";
+    const response = await apiFetch(`/occurrences/${id}/comments${query}`);
     if (!response.ok) throw await readErrorMessage(response, "Falha ao carregar comentarios");
     return response.json();
   }
@@ -111,6 +121,15 @@ class OccurrenceService {
     });
 
     if (!response.ok) throw await readErrorMessage(response, "Falha ao adicionar comentario");
+  }
+
+  async vote(id: number, solved: boolean): Promise<void> {
+    const response = await apiFetch(`/occurrences/${id}/vote`, {
+      method: "POST",
+      body: JSON.stringify({ solved }),
+    });
+
+    if (!response.ok) throw await readErrorMessage(response, "Falha ao votar na ocorrencia");
   }
 
   async delete(id: number): Promise<void> {

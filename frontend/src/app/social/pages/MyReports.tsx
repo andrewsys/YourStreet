@@ -19,6 +19,7 @@ type SortMode = "likes" | "newest" | "oldest";
 
 const statusLabels = {
   pending: { label: "Pendente", color: "bg-amber-500" },
+  archived: { label: "Arquivada", color: "bg-slate-600" },
 };
 
 function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -78,6 +79,7 @@ export function MyReports() {
   const [resolvingNearby, setResolvingNearby] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>("nearby");
   const [sortMode, setSortMode] = useState<SortMode>("likes");
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [distanceById, setDistanceById] = useState<Record<number, number | null>>({});
@@ -150,7 +152,7 @@ export function MyReports() {
     const user = authService.getCurrentUser() || (await authService.checkCurrentUser());
     setUserId(user ? Number(user.id) : null);
 
-    const allReports = await occurrenceService.list();
+    const allReports = await occurrenceService.list({ includeArchived });
     setReports(allReports);
   };
 
@@ -189,7 +191,7 @@ export function MyReports() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [includeArchived]);
 
   useEffect(() => {
     let mounted = true;
@@ -332,9 +334,19 @@ export function MyReports() {
           </select>
         </div>
 
+        <label className="mb-6 flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            className="h-4 w-4"
+            checked={includeArchived}
+            onChange={(event) => setIncludeArchived(event.target.checked)}
+          />
+          Mostrar ocorrencias arquivadas
+        </label>
+
         {loading ? (
           <div className="text-center py-12">
-            <p className="text-muted-foreground">Carregando suas ocorrências...</p>
+            <p className="text-muted-foreground">Carregando ocorrências...</p>
           </div>
         ) : resolvingNearby && filterMode === "nearby" ? (
           <div className="text-center py-12">
@@ -363,10 +375,16 @@ export function MyReports() {
                         ) : (
                           <div className="w-full h-full grid place-items-center text-xs text-muted-foreground">Sem imagem</div>
                         )}
-                        <div
-                          className={`absolute top-1 right-1 ${statusLabels.pending.color} text-white text-xs px-2 py-0.5 rounded-full`}
-                        >
-                          {statusLabels.pending.label}
+                        <div className="absolute top-1 right-1 flex flex-col gap-1 items-end">
+                          {report.archivedAt ? (
+                            <div className={`${statusLabels.archived.color} text-white text-xs px-2 py-0.5 rounded-full`}>
+                              {statusLabels.archived.label}
+                            </div>
+                          ) : (
+                            <div className={`${statusLabels.pending.color} text-white text-xs px-2 py-0.5 rounded-full`}>
+                              {statusLabels.pending.label}
+                            </div>
+                          )}
                         </div>
                       </div>
 

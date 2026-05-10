@@ -24,10 +24,17 @@ public class Occurrence
     // data de criação
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    // ultima interacao (comentario, like ou voto)
+    public DateTime LastInteractionAt { get; set; } = DateTime.UtcNow;
+
+    // quando arquivada por inatividade
+    public DateTime? ArchivedAt { get; set; }
+
     // imagem em base64
     public string? ImageBase64 { get; set; }
 
     public ICollection<OccurrenceLike> Likes { get; set; } = new List<OccurrenceLike>();
     public ICollection<OccurrenceFavorite> Favorites { get; set; } = new List<OccurrenceFavorite>();
     public ICollection<OccurrenceComment> Comments { get; set; } = new List<OccurrenceComment>();
+    public ICollection<OccurrenceVote> Votes { get; set; } = new List<OccurrenceVote>();
 }

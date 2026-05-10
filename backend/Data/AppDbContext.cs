@@ -14,6 +14,7 @@ public class AppDbContext : DbContext
     public DbSet<OccurrenceLike> OccurrenceLikes { get; set; }
     public DbSet<OccurrenceFavorite> OccurrenceFavorites { get; set; }
     public DbSet<OccurrenceComment> OccurrenceComments { get; set; }
+    public DbSet<OccurrenceVote> OccurrenceVotes { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -73,6 +74,15 @@ public class AppDbContext : DbContext
             entity.Property(c => c.Text).IsRequired().HasMaxLength(1000);
             entity.HasOne(c => c.Occurrence).WithMany(o => o.Comments).HasForeignKey(c => c.OccurrenceId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(c => c.User).WithMany().HasForeignKey(c => c.UserId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<OccurrenceVote>(entity =>
+        {
+            entity.HasKey(v => v.Id);
+            entity.HasIndex(v => new { v.OccurrenceId, v.UserId }).IsUnique();
+            entity.Property(v => v.Solved).IsRequired();
+            entity.HasOne(v => v.Occurrence).WithMany(o => o.Votes).HasForeignKey(v => v.OccurrenceId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(v => v.User).WithMany().HasForeignKey(v => v.UserId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }
