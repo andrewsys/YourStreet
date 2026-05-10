@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ArrowLeft, Heart, MapPin, MessageCircle, Send, Share2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Heart, MapPin, MessageCircle, Send, Share2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -14,6 +14,7 @@ const typeLabel: Record<string, string> = {
 
 const statusLabels = {
   pending: { label: "Pendente", color: "bg-amber-500" },
+  archived: { label: "Arquivada", color: "bg-slate-600" },
 };
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -55,8 +56,8 @@ export function OccurrenceDetails() {
     if (!Number.isFinite(occurrenceId)) return;
 
     const [occurrenceData, commentsData] = await Promise.all([
-      occurrenceService.getById(occurrenceId),
-      occurrenceService.getComments(occurrenceId),
+      occurrenceService.getById(occurrenceId, { includeArchived: true }),
+      occurrenceService.getComments(occurrenceId, { includeArchived: true }),
     ]);
 
     setOccurrence(occurrenceData);
@@ -84,6 +85,7 @@ export function OccurrenceDetails() {
 
   const handleLike = async () => {
     if (!occurrence) return;
+    if (occurrence.archivedAt) return;
 
     try {
       setActionsLoading(true);
@@ -118,10 +120,26 @@ export function OccurrenceDetails() {
     }
   };
 
+  const handleVote = async (solved: boolean) => {
+    if (!occurrence) return;
+    if (occurrence.archivedAt) return;
+
+    try {
+      setActionsLoading(true);
+      await occurrenceService.vote(occurrence.id, solved);
+      await loadOccurrence();
+    } catch (error) {
+      console.error(error);
+      toast.error(getErrorMessage(error, "Nao foi possivel votar na ocorrencia"));
+    } finally {
+      setActionsLoading(false);
+    }
+  };
+
   const handleAddComment = async (event: React.FormEvent) => {
     event.preventDefault();
 
-    if (!occurrence || !commentText.trim()) return;
+    if (!occurrence || !commentText.trim() || occurrence.archivedAt) return;
 
     try {
       setSubmittingComment(true);
@@ -173,10 +191,28 @@ export function OccurrenceDetails() {
         )}
 
         <div className="px-4 pt-4">
-          <div className="mb-3">
-            <span className={`${statusLabels.pending.color} text-white text-xs px-3 py-1 rounded-full inline-block`}>
-              {statusLabels.pending.label}
-            </span>
+          <div className="mb-3 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+            {occurrence.archivedAt ? (
+              <span className={`${statusLabels.archived.color} text-white text-xs px-3 py-1 rounded-full inline-block`}>
+                {statusLabels.archived.label}
+              </span>
+            ) : (
+              <span className={`${statusLabels.pending.color} text-white text-xs px-3 py-1 rounded-full inline-block`}>
+                {statusLabels.pending.label}
+              </span>
+            )}
+            {occurrence.archivedAt && (
+              <span className="text-xs text-muted-foreground">
+                Esta ocorrencia foi arquivada por inatividade.
+              </span>
+            )}
+            </div>
+            {occurrence.archivedAt && (
+              <span className="text-xs text-muted-foreground">
+                Arquivada em {formatDate(occurrence.archivedAt)}
+              </span>
+            )}
           </div>
 
           <h1 className="text-2xl font-semibold mb-3">{typeLabel[occurrence.type] || occurrence.type}</h1>
@@ -192,10 +228,39 @@ export function OccurrenceDetails() {
             <p className="text-muted-foreground leading-relaxed">{occurrence.description || "Sem descricao informada."}</p>
           </div>
 
+          <p className="font-semibold text-sm mb-3">
+            Votos: {occurrence.solvedVotesCount} dizem que foi solucionada, {occurrence.unsolvedVotesCount} dizem que nao foi.
+          </p>
+
+          {!occurrence.archivedAt && (
+            <div className="flex items-center gap-3 mb-6">
+              <button
+                onClick={() => handleVote(true)}
+                disabled={actionsLoading}
+                className={`flex-1 flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  occurrence.currentUserVote === true ? "border-emerald-500 text-emerald-600 bg-emerald-50" : "border-border"
+                }`}
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                Resolvida ({occurrence.solvedVotesCount})
+              </button>
+              <button
+                onClick={() => handleVote(false)}
+                disabled={actionsLoading}
+                className={`flex-1 flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  occurrence.currentUserVote === false ? "border-rose-500 text-rose-600 bg-rose-50" : "border-border"
+                }`}
+              >
+                <XCircle className="h-4 w-4" />
+                Nao resolvida ({occurrence.unsolvedVotesCount})
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center gap-6 py-4 border-y border-border mb-6">
             <button
               onClick={handleLike}
-              disabled={actionsLoading}
+              disabled={actionsLoading || Boolean(occurrence.archivedAt)}
               className={`flex items-center gap-2 hover:text-amber-600 transition-colors ${occurrence.likedByCurrentUser ? "text-amber-600" : ""}`}
             >
               <Heart className={`h-5 w-5 ${occurrence.likedByCurrentUser ? "fill-current" : ""}`} />
@@ -227,14 +292,15 @@ export function OccurrenceDetails() {
                 <div className="flex-1 flex gap-2">
                   <Input
                     type="text"
-                    placeholder="Adicione um comentario..."
+                    placeholder={occurrence.archivedAt ? "Ocorrencia arquivada - comentarios desativados" : "Adicione um comentario..."}
                     value={commentText}
                     onChange={(event) => setCommentText(event.target.value)}
                     className="flex-1"
+                    disabled={Boolean(occurrence.archivedAt)}
                   />
                   <button
                     type="submit"
-                    disabled={!commentText.trim() || submittingComment}
+                    disabled={!commentText.trim() || submittingComment || Boolean(occurrence.archivedAt)}
                     className="p-2 bg-primary text-primary-foreground rounded-lg hover:bg-opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Send className="h-5 w-5" />

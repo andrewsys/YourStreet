@@ -47,7 +47,8 @@ public class OccurrencesController : ControllerBase
             Description = dto.Description,
             Address = dto.Address,
             ImageBase64 = dto.ImageBase64,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            LastInteractionAt = DateTime.UtcNow
         };
 
         _context.Occurrences.Add(occ);
@@ -57,16 +58,27 @@ public class OccurrencesController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> List()
+    public async Task<IActionResult> List([FromQuery] bool includeArchived = false)
     {
+        await ArchiveStaleOccurrencesAsync();
+
         var userIdStr = HttpContext.Session.GetString("user_id");
         int? userId = null;
         if (int.TryParse(userIdStr, out var uid)) userId = uid;
 
-        var list = await _context.Occurrences
+        var occurrencesQuery = _context.Occurrences
             .Include(o => o.Comments)
             .Include(o => o.Likes)
             .Include(o => o.Favorites)
+            .Include(o => o.Votes)
+            .AsQueryable();
+
+        if (!includeArchived)
+        {
+            occurrencesQuery = occurrencesQuery.Where(o => o.ArchivedAt == null);
+        }
+
+        var list = await occurrencesQuery
             .OrderByDescending(o => o.CreatedAt)
             .Select(o => new
             {
@@ -76,10 +88,16 @@ public class OccurrencesController : ControllerBase
                 description = o.Description,
                 address = o.Address,
                 createdAt = o.CreatedAt,
+                archivedAt = o.ArchivedAt,
                 imageBase64 = o.ImageBase64,
                 likesCount = o.Likes.Count,
                 favoritesCount = o.Favorites.Count,
                 commentsCount = o.Comments.Count,
+                solvedVotesCount = o.Votes.Count(v => v.Solved),
+                unsolvedVotesCount = o.Votes.Count(v => !v.Solved),
+                currentUserVote = userId.HasValue
+                    ? o.Votes.Where(v => v.UserId == userId.Value).Select(v => (bool?)v.Solved).FirstOrDefault()
+                    : null,
                 likedByCurrentUser = userId.HasValue && o.Likes.Any(l => l.UserId == userId.Value),
                 favoritedByCurrentUser = userId.HasValue && o.Favorites.Any(f => f.UserId == userId.Value)
             })
@@ -89,8 +107,10 @@ public class OccurrencesController : ControllerBase
     }
 
     [HttpGet("{id}")]
-    public async Task<IActionResult> GetById(int id)
+    public async Task<IActionResult> GetById(int id, [FromQuery] bool includeArchived = false)
     {
+        await ArchiveStaleOccurrencesAsync();
+
         var userIdStr = HttpContext.Session.GetString("user_id");
         int? userId = null;
         if (int.TryParse(userIdStr, out var uid)) userId = uid;
@@ -99,9 +119,11 @@ public class OccurrencesController : ControllerBase
             .Include(o => o.Comments).ThenInclude(c => c.User)
             .Include(o => o.Likes)
             .Include(o => o.Favorites)
+            .Include(o => o.Votes)
             .FirstOrDefaultAsync(o => o.Id == id);
 
         if (occ == null) return NotFound();
+        if (!includeArchived && occ.ArchivedAt != null) return NotFound();
 
         return Ok(new
         {
@@ -111,10 +133,16 @@ public class OccurrencesController : ControllerBase
             description = occ.Description,
             address = occ.Address,
             createdAt = occ.CreatedAt,
+            archivedAt = occ.ArchivedAt,
             imageBase64 = occ.ImageBase64,
             likesCount = occ.Likes.Count,
             favoritesCount = occ.Favorites.Count,
             comments = occ.Comments.Select(c => new { id = c.Id, userId = c.UserId, text = c.Text, createdAt = c.CreatedAt }),
+            solvedVotesCount = occ.Votes.Count(v => v.Solved),
+            unsolvedVotesCount = occ.Votes.Count(v => !v.Solved),
+            currentUserVote = userId.HasValue
+                ? occ.Votes.Where(v => v.UserId == userId.Value).Select(v => (bool?)v.Solved).FirstOrDefault()
+                : null,
             likedByCurrentUser = userId.HasValue && occ.Likes.Any(l => l.UserId == userId.Value),
             favoritedByCurrentUser = userId.HasValue && occ.Favorites.Any(f => f.UserId == userId.Value)
         });
@@ -128,7 +156,7 @@ public class OccurrencesController : ControllerBase
             return Unauthorized("Usuário não autenticado");
 
         var occ = await _context.Occurrences.FindAsync(id);
-        if (occ == null) return NotFound();
+        if (occ == null || occ.ArchivedAt != null) return NotFound();
 
         var existing = await _context.OccurrenceLikes.FirstOrDefaultAsync(l => l.OccurrenceId == id && l.UserId == userId);
         if (existing == null)
@@ -139,6 +167,8 @@ public class OccurrencesController : ControllerBase
         {
             _context.OccurrenceLikes.Remove(existing);
         }
+
+        occ.LastInteractionAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
         return Ok();
@@ -152,7 +182,7 @@ public class OccurrencesController : ControllerBase
             return Unauthorized("Usuário não autenticado");
 
         var occ = await _context.Occurrences.FindAsync(id);
-        if (occ == null) return NotFound();
+        if (occ == null || occ.ArchivedAt != null) return NotFound();
 
         var existing = await _context.OccurrenceFavorites.FirstOrDefaultAsync(f => f.OccurrenceId == id && f.UserId == userId);
         if (existing == null)
@@ -186,10 +216,11 @@ public class OccurrencesController : ControllerBase
     }
 
     [HttpGet("{id}/comments")]
-    public async Task<IActionResult> GetComments(int id)
+    public async Task<IActionResult> GetComments(int id, [FromQuery] bool includeArchived = false)
     {
         var occ = await _context.Occurrences.FindAsync(id);
         if (occ == null) return NotFound("Ocorrência não encontrada");
+        if (!includeArchived && occ.ArchivedAt != null) return NotFound("Ocorrência não encontrada");
 
         var comments = await _context.OccurrenceComments
             .Include(c => c.User)
@@ -222,12 +253,13 @@ public class OccurrencesController : ControllerBase
             return Unauthorized("Usuário não autenticado");
 
         var occ = await _context.Occurrences.FindAsync(id);
-        if (occ == null) return NotFound();
+        if (occ == null || occ.ArchivedAt != null) return NotFound();
 
         if (string.IsNullOrWhiteSpace(dto.Text)) return BadRequest("Comentário vazio");
 
         var comment = new OccurrenceComment { OccurrenceId = id, UserId = userId, Text = dto.Text, CreatedAt = DateTime.UtcNow };
         _context.OccurrenceComments.Add(comment);
+        occ.LastInteractionAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
 
         return CreatedAtAction(nameof(GetById), new { id = id }, new { commentId = comment.Id });
@@ -245,6 +277,41 @@ public class OccurrencesController : ControllerBase
     public class CreateCommentDto
     {
         public string Text { get; set; } = string.Empty;
+    }
+
+    public class VoteOccurrenceDto
+    {
+        public bool Solved { get; set; }
+    }
+
+    [HttpPost("{id}/vote")]
+    public async Task<IActionResult> Vote(int id, [FromBody] VoteOccurrenceDto dto)
+    {
+        var userIdStr = HttpContext.Session.GetString("user_id");
+        if (string.IsNullOrEmpty(userIdStr) || !int.TryParse(userIdStr, out var userId))
+            return Unauthorized("Usuário não autenticado");
+
+        var occ = await _context.Occurrences.FindAsync(id);
+        if (occ == null || occ.ArchivedAt != null) return NotFound();
+
+        var existing = await _context.OccurrenceVotes.FirstOrDefaultAsync(v => v.OccurrenceId == id && v.UserId == userId);
+        if (existing == null)
+        {
+            _context.OccurrenceVotes.Add(new OccurrenceVote
+            {
+                OccurrenceId = id,
+                UserId = userId,
+                Solved = dto.Solved
+            });
+        }
+        else
+        {
+            existing.Solved = dto.Solved;
+        }
+
+        occ.LastInteractionAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+        return Ok();
     }
 
     private async Task<string?> GenerateTypeAsync(CreateOccurrenceDto dto)
@@ -367,5 +434,15 @@ public class OccurrencesController : ControllerBase
         }
 
         return text;
+    }
+
+    private async Task ArchiveStaleOccurrencesAsync()
+    {
+        var cutoff = DateTime.UtcNow.AddHours(-72);
+
+        await _context.Occurrences
+            .Where(o => o.ArchivedAt == null && o.LastInteractionAt <= cutoff)
+            .ExecuteUpdateAsync(update =>
+                update.SetProperty(o => o.ArchivedAt, DateTime.UtcNow));
     }
 }
