@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Net.Http.Json;
+using System.Text.Json;
 using your_street_server.Data;
 using your_street_server.Models;
 
@@ -10,12 +12,21 @@ namespace your_street_server.Controllers;
 public class OccurrencesController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILogger<OccurrencesController> _logger;
+    private readonly string? _googleAiApiKey;
+    private const string GeminiModel = "gemini-2.5-flash";
 
-    private static readonly string[] AllowedTypes = new[] { "buraco", "alagamento", "acidente" };
-
-    public OccurrencesController(AppDbContext context)
+    public OccurrencesController(
+        AppDbContext context,
+        IHttpClientFactory httpClientFactory,
+        ILogger<OccurrencesController> logger)
     {
         _context = context;
+        _httpClientFactory = httpClientFactory;
+        _logger = logger;
+        _googleAiApiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
+            ?? Environment.GetEnvironmentVariable("GOOGLE_AI_API_KEY");
     }
 
     [HttpPost]
@@ -25,14 +36,14 @@ public class OccurrencesController : ControllerBase
         if (string.IsNullOrEmpty(userIdStr) || !int.TryParse(userIdStr, out var userId))
             return Unauthorized("Usuário não autenticado");
 
-        var normalizedType = dto.Type?.Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(normalizedType) || !AllowedTypes.Contains(normalizedType))
-            return BadRequest("Tipo inválido");
+        var generatedType = await GenerateTypeAsync(dto);
+        if (string.IsNullOrWhiteSpace(generatedType))
+            return StatusCode(StatusCodes.Status502BadGateway, "Falha ao categorizar ocorrência pela IA");
 
         var occ = new Occurrence
         {
             UserId = userId,
-            Type = normalizedType!,
+            Type = generatedType,
             Description = dto.Description,
             Address = dto.Address,
             ImageBase64 = dto.ImageBase64,
@@ -234,5 +245,127 @@ public class OccurrencesController : ControllerBase
     public class CreateCommentDto
     {
         public string Text { get; set; } = string.Empty;
+    }
+
+    private async Task<string?> GenerateTypeAsync(CreateOccurrenceDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(_googleAiApiKey))
+            return null;
+
+        var description = dto.Description?.Trim();
+        var address = dto.Address?.Trim();
+
+        var prompt =
+            "Classifique ocorrencias urbanas. Gere um tipo curto (ate 50 caracteres). " +
+            "Responda apenas com o tipo, sem aspas, sem lista e sem pontuacao extra. " +
+            "Nao responda 'desconhecido' nem 'outros'. " +
+            $"Descricao: {description ?? "(vazio)"}. Endereco: {address ?? "(vazio)"}.";
+
+        var payload = new
+        {
+            contents = new[]
+            {
+                new
+                {
+                    parts = new[] { new { text = prompt } }
+                }
+            },
+            generationConfig = new { temperature = 0.2, maxOutputTokens = 1000, responseMimeType = "text/plain" }
+        };
+
+        var result = await CallGeminiAsync(payload, description, address);
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            var retryPrompt =
+                "Gere um tipo curto e descritivo (ate 50 caracteres) para a ocorrencia urbana abaixo. " +
+                "Responda apenas com o tipo, sem pontuacao extra. Nao responda 'desconhecido' nem 'outros'. " +
+                $"Descricao: {description ?? "(vazio)"}. Endereco: {address ?? "(vazio)"}.";
+
+            var retryPayload = new
+            {
+                contents = new[] { new { parts = new[] { new { text = retryPrompt } } } },
+                generationConfig = new { temperature = 0.2, maxOutputTokens = 1000, responseMimeType = "text/plain" }
+            };
+
+            result = await CallGeminiAsync(retryPayload, description, address);
+        }
+
+        if (string.IsNullOrWhiteSpace(result))
+            return null;
+
+        var normalized = result
+            .Replace("\r", " ")
+            .Replace("\n", " ")
+            .Replace("\"", string.Empty)
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(normalized))
+            return null;
+
+        if (normalized.Length > 50)
+            normalized = normalized[..50];
+
+        return normalized.ToLowerInvariant();
+    }
+
+    private async Task<string?> CallGeminiAsync(object payload, string? description, string? address)
+    {
+        var client = _httpClientFactory.CreateClient("GoogleAi");
+        HttpResponseMessage response;
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+
+        try
+        {
+            response = await client.PostAsJsonAsync(
+                $"v1beta/models/{GeminiModel}:generateContent?key={_googleAiApiKey}",
+                payload,
+                timeoutCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Gemini request failed.");
+            return null;
+        }
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "Gemini request failed with status {StatusCode}. Body: {Body}",
+                response.StatusCode,
+                body);
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(body);
+        string? text = null;
+        string? finishReason = null;
+        if (doc.RootElement.TryGetProperty("candidates", out var candidates) && candidates.GetArrayLength() > 0)
+        {
+            var candidate = candidates[0];
+            if (candidate.TryGetProperty("finishReason", out var finishReasonElement))
+                finishReason = finishReasonElement.GetString();
+
+            if (candidate.TryGetProperty("content", out var content) &&
+                content.TryGetProperty("parts", out var parts) &&
+                parts.GetArrayLength() > 0 &&
+                parts[0].TryGetProperty("text", out var textElement))
+            {
+                text = textElement.GetString();
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _logger.LogWarning(
+                "Gemini returned empty text. FinishReason: {FinishReason}. Description length: {DescriptionLength}, Address length: {AddressLength}. Body: {Body}",
+                finishReason ?? "(null)",
+                description?.Length ?? 0,
+                address?.Length ?? 0,
+                body);
+        }
+
+        return text;
     }
 }
