@@ -19,7 +19,6 @@ async function readErrorMessage(response: Response, fallback: string): Promise<E
   return new Error(message);
 }
 
-export type OccurrenceType = "buraco" | "alagamento" | "acidente";
 
 export interface OccurrenceSummary {
   id: number;
@@ -54,7 +53,6 @@ export interface OccurrenceDetails extends Omit<OccurrenceSummary, "commentsCoun
 }
 
 export interface CreateOccurrencePayload {
-  type: OccurrenceType;
   description: string;
   address: string;
   imageBase64?: string | null;

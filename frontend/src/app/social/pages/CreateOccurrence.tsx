@@ -5,7 +5,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import occurrenceService, { OccurrenceType } from "../../../services/OccurrenceService";
+import occurrenceService from "../../../services/OccurrenceService";
 
 interface AddressSuggestion {
   id: string;
@@ -31,7 +31,6 @@ async function fileToBase64(file: File): Promise<string> {
 }
 
 export function CreateOccurrence() {
-  const [type, setType] = useState<OccurrenceType>("buraco");
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState("");
   const [suggestions, setSuggestions] = useState<Array<AddressSuggestion>>([]);
@@ -118,14 +117,12 @@ export function CreateOccurrence() {
     try {
       setSubmitting(true);
       await occurrenceService.create({
-        type,
         description,
         address: location,
         imageBase64: image,
       });
 
       toast.success("Ocorrencia criada com sucesso!");
-      setType("buraco");
       setDescription("");
       setLocation("");
       setSuggestions([]);
@@ -341,21 +338,6 @@ export function CreateOccurrence() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="space-y-2">
-            <Label htmlFor="type">Tipo do Problema *</Label>
-            <select
-              id="type"
-              value={type}
-              onChange={(event) => setType(event.target.value as OccurrenceType)}
-              className="w-full rounded-md bg-input-background border-0 px-3 py-2 text-sm"
-              required
-            >
-              <option value="buraco">Buraco</option>
-              <option value="alagamento">Alagamento</option>
-              <option value="acidente">Acidente</option>
-            </select>
-          </div>
-
           <div className="space-y-2">
             <Label htmlFor="description">Descricao *</Label>
             <Textarea
