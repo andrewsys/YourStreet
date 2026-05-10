@@ -324,6 +324,9 @@ export function MapView() {
       return geocodeCacheRef.current.get(normalized) ?? null;
     }
 
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 6000);
+
     try {
       if (!HERE_API_KEY) {
         geocodeCacheRef.current.set(normalized, null);
@@ -338,7 +341,9 @@ export function MapView() {
         apiKey: HERE_API_KEY,
       });
 
-      const response = await fetch(`https://geocode.search.hereapi.com/v1/geocode?${params.toString()}`);
+      const response = await fetch(`https://geocode.search.hereapi.com/v1/geocode?${params.toString()}`, {
+        signal: controller.signal,
+      });
 
       if (!response.ok) {
         geocodeCacheRef.current.set(normalized, null);
@@ -373,6 +378,8 @@ export function MapView() {
     } catch {
       geocodeCacheRef.current.set(normalized, null);
       return null;
+    } finally {
+      window.clearTimeout(timeoutId);
     }
   };
 
@@ -406,27 +413,31 @@ export function MapView() {
     const resolveAllCoordinates = async () => {
       if (occurrences.length === 0) {
         setMapOccurrences([]);
+        setResolvingCoordinates(false);
         return;
       }
 
       setResolvingCoordinates(true);
 
-      const resolved: Array<OccurrenceOnMap> = [];
+      try {
+        const resolved: Array<OccurrenceOnMap> = [];
 
-      for (let i = 0; i < occurrences.length; i += 1) {
-        const occurrence = occurrences[i];
-        const address = occurrence.address?.trim() ?? "";
-        const coords = address ? await fetchCoordinates(address) : null;
+        for (let i = 0; i < occurrences.length; i += 1) {
+          const occurrence = occurrences[i];
+          const address = occurrence.address?.trim() ?? "";
+          const coords = address ? await fetchCoordinates(address) : null;
 
-        resolved.push({
-          ...occurrence,
-          coordinates: coords ?? fallbackCoordinates(occurrence.id, i),
-        });
+          resolved.push({
+            ...occurrence,
+            coordinates: coords ?? fallbackCoordinates(occurrence.id, i),
+          });
+        }
+
+        if (!mounted) return;
+        setMapOccurrences(resolved);
+      } finally {
+        if (mounted) setResolvingCoordinates(false);
       }
-
-      if (!mounted) return;
-      setMapOccurrences(resolved);
-      setResolvingCoordinates(false);
     };
 
     void resolveAllCoordinates();
